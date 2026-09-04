@@ -1,6 +1,7 @@
 import os
 import time
 import random
+import re
 import sqlite3
 import asyncio
 import datetime
@@ -303,7 +304,7 @@ async def sendmessage_error(interaction: discord.Interaction, error):
 
 
 # Άλλαξε αυτό στο δικό σου custom emoji ID όταν το βρεις (π.χ. "<:gucci:1234567890>")
-GUCCI_EMOJI = "<:gucci:EMOJI_ID>"
+GUCCI_EMOJI = "<:gucci:1545536664565190686>"
 
 PLANS_TEXT = (
     f"{GUCCI_EMOJI} **Gucci Solutions Plans**\n\n"
@@ -1068,12 +1069,259 @@ async def slap(interaction: discord.Interaction, member: discord.Member):
 
 
 # ============================================================
+#  TICKETS
+# ============================================================
+
+def _env_int(name: str):
+    value = os.getenv(name, "0")
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    return n or None
+
+
+TICKET_CATEGORY_ID = _env_int("TICKET_CATEGORY_ID")     # ID κατηγορίας όπου θα μπαίνουν τα ticket κανάλια
+TICKET_STAFF_ROLE_ID = _env_int("TICKET_STAFF_ROLE_ID")  # Ρόλος staff που βλέπει όλα τα tickets
+TICKET_LOG_CHANNEL_ID = _env_int("TICKET_LOG_CHANNEL_ID")  # Κανάλι για log όταν κλείνει ένα ticket
+
+# user_id -> channel_id (in-memory· αν θες persistence μετά από restart, βάλε το σε DB)
+open_tickets: dict[int, int] = {}
+# Χρήστες που μόλις πάτησαν "Άνοιγμα Ticket" και περιμένουν να δημιουργηθεί
+# το κανάλι — αποτρέπει διπλά tickets από γρήγορα διπλά κλικ.
+pending_ticket_opens: set[int] = set()
+
+
+def ticket_channel_name(member: discord.Member) -> str:
+    base = "".join(c for c in member.name.lower() if c.isalnum() or c == "-") or "user"
+    return f"ticket-{base}-{member.id % 10000}"
+
+
+def is_ticket_channel(channel) -> bool:
+    return isinstance(channel, discord.TextChannel) and channel.name.startswith("ticket-")
+
+
+def get_ticket_owner_id(channel: discord.TextChannel):
+    """Βρίσκει ποιος άνοιξε το ticket. Ελέγχει πρώτα τη μνήμη (γρήγορο),
+    αλλιώς διαβάζει το topic του καναλιού — έτσι δουλεύει ακόμα κι αν
+    το bot έκανε restart και έχασε το open_tickets dict."""
+    for uid, cid in open_tickets.items():
+        if cid == channel.id:
+            return uid
+    if channel.topic:
+        match = re.search(r"owner_id:(\d+)", channel.topic)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def find_existing_ticket_channel(guild: discord.Guild, member: discord.Member):
+    """Ψάχνει αν ο χρήστης έχει ήδη ανοιχτό ticket — πρώτα στη μνήμη,
+    αλλιώς ψάχνοντας τα κανάλια του server (επιβιώνει σε restart)."""
+    channel_id = open_tickets.get(member.id)
+    if channel_id:
+        existing = guild.get_channel(channel_id)
+        if existing:
+            return existing
+        open_tickets.pop(member.id, None)
+
+    marker = f"owner_id:{member.id}"
+    for ch in guild.text_channels:
+        if is_ticket_channel(ch) and ch.topic and marker in ch.topic:
+            open_tickets[member.id] = ch.id
+            return ch
+    return None
+
+
+async def _close_ticket(interaction: discord.Interaction, channel: discord.TextChannel):
+    opener_id = get_ticket_owner_id(channel)
+
+    is_staff = bool(TICKET_STAFF_ROLE_ID and any(r.id == TICKET_STAFF_ROLE_ID for r in interaction.user.roles))
+    can_close = (
+        is_staff
+        or interaction.user.id == opener_id
+        or interaction.user.guild_permissions.manage_channels
+    )
+    if not can_close:
+        await interaction.response.send_message("❌ Δεν έχεις δικαίωμα να κλείσεις αυτό το ticket.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("🔒 Το ticket κλείνει σε 5 δευτερόλεπτα...")
+
+    if opener_id is not None:
+        open_tickets.pop(opener_id, None)
+
+    if TICKET_LOG_CHANNEL_ID:
+        log_channel = interaction.guild.get_channel(TICKET_LOG_CHANNEL_ID)
+        if log_channel:
+            try:
+                await log_channel.send(f"🔒 Το ticket **{channel.name}** έκλεισε από {interaction.user.mention}.")
+            except discord.Forbidden:
+                pass
+
+    await asyncio.sleep(5)
+    try:
+        await channel.delete(reason=f"Ticket closed by {interaction.user}")
+    except discord.Forbidden:
+        pass
+
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Κλείσιμο Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        if not is_ticket_channel(channel):
+            await interaction.response.send_message("❌ Αυτό δεν είναι κανάλι ticket.", ephemeral=True)
+            return
+        await _close_ticket(interaction, channel)
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Άνοιγμα Ticket", style=discord.ButtonStyle.blurple, emoji="🎫", custom_id="ticket_open")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+
+        existing = find_existing_ticket_channel(guild, member)
+        if existing:
+            await interaction.response.send_message(
+                f"⚠️ Έχεις ήδη ανοιχτό ticket: {existing.mention}", ephemeral=True
+            )
+            return
+
+        if member.id in pending_ticket_opens:
+            await interaction.response.send_message(
+                "⏳ Το ticket σου δημιουργείται ήδη, περίμενε λίγο.", ephemeral=True
+            )
+            return
+        pending_ticket_opens.add(member.id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        category = guild.get_channel(TICKET_CATEGORY_ID) if TICKET_CATEGORY_ID else None
+        if not isinstance(category, discord.CategoryChannel):
+            category = None
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        if TICKET_STAFF_ROLE_ID:
+            staff_role = guild.get_role(TICKET_STAFF_ROLE_ID)
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        try:
+            channel = await guild.create_text_channel(
+                name=ticket_channel_name(member),
+                category=category,
+                overwrites=overwrites,
+                topic=f"Ticket του {member} | owner_id:{member.id}",
+                reason=f"Ticket από {member}",
+            )
+        except discord.Forbidden:
+            pending_ticket_opens.discard(member.id)
+            await interaction.followup.send(
+                "❌ Δεν έχω δικαίωμα να δημιουργήσω κανάλι. Πες σε έναν admin να μου δώσει 'Manage Channels'.",
+                ephemeral=True,
+            )
+            return
+
+        pending_ticket_opens.discard(member.id)
+        open_tickets[member.id] = channel.id
+
+        staff_mention = f"<@&{TICKET_STAFF_ROLE_ID}>" if TICKET_STAFF_ROLE_ID else ""
+        embed = discord.Embed(
+            title="🎫 Νέο Ticket",
+            description=(
+                f"Γεια σου {member.mention}! Περίγραψε το πρόβλημα ή την ερώτησή σου εδώ "
+                "και η ομάδα υποστήριξης θα σε βοηθήσει σύντομα.\n\n"
+                "Πάτησε το κουμπί παρακάτω όταν θέλεις να κλείσεις το ticket."
+            ),
+            color=discord.Color.blurple(),
+        )
+        await channel.send(
+            content=f"{member.mention} {staff_mention}".strip(),
+            embed=embed,
+            view=CloseTicketView(),
+        )
+        await interaction.followup.send(f"✅ Το ticket σου δημιουργήθηκε: {channel.mention}", ephemeral=True)
+
+
+@bot.tree.command(name="setupticket", description="Στέλνει το panel ανοίγματος tickets στο κανάλι που θέλεις")
+@app_commands.describe(channel="Το κανάλι όπου θα σταλεί το panel (προεπιλογή: το τρέχον κανάλι)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setupticket(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    target_channel = channel or interaction.channel
+    embed = discord.Embed(
+        title="🎫 Support Tickets",
+        description="Πάτησε το κουμπί παρακάτω για να ανοίξεις ένα ιδιωτικό ticket με την ομάδα υποστήριξης.",
+        color=discord.Color.blurple(),
+    )
+    try:
+        await target_channel.send(embed=embed, view=TicketPanelView())
+        await interaction.response.send_message(f"✅ Το panel στάλθηκε στο {target_channel.mention}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+
+
+@setupticket.error
+async def setupticket_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Server' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
+@bot.tree.command(name="ticket-add", description="Προσθέτει έναν χρήστη στο τρέχον ticket")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def ticket_add(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    if not is_ticket_channel(channel):
+        await interaction.response.send_message("❌ Αυτή η εντολή δουλεύει μόνο μέσα σε κανάλι ticket.", ephemeral=True)
+        return
+    await channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+    await interaction.response.send_message(f"✅ Προστέθηκε ο/η {member.mention} στο ticket.")
+
+
+@bot.tree.command(name="ticket-remove", description="Αφαιρεί έναν χρήστη από το τρέχον ticket")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def ticket_remove(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    if not is_ticket_channel(channel):
+        await interaction.response.send_message("❌ Αυτή η εντολή δουλεύει μόνο μέσα σε κανάλι ticket.", ephemeral=True)
+        return
+    await channel.set_permissions(member, overwrite=None)
+    await interaction.response.send_message(f"✅ Αφαιρέθηκε ο/η {member.mention} από το ticket.")
+
+
+@bot.tree.command(name="ticket-close", description="Κλείνει το τρέχον ticket")
+async def ticket_close_cmd(interaction: discord.Interaction):
+    channel = interaction.channel
+    if not is_ticket_channel(channel):
+        await interaction.response.send_message("❌ Αυτή η εντολή δουλεύει μόνο μέσα σε κανάλι ticket.", ephemeral=True)
+        return
+    await _close_ticket(interaction, channel)
+
+
+# ============================================================
 #  READY / STARTUP
 # ============================================================
 
 @bot.event
 async def on_ready():
     print(f"✅ Συνδέθηκε ως {bot.user} (ID: {bot.user.id})")
+    bot.add_view(TicketPanelView())
+    bot.add_view(CloseTicketView())
     for guild in bot.guilds:
         await cache_guild_invites(guild)
     try:
