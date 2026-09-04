@@ -350,6 +350,40 @@ async def plans_error(interaction: discord.Interaction, error):
         await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
 
 
+PAYMENT_METHODS_TEXT = (
+    f"{GUCCI_EMOJI} **Payment Methods**\n\n"
+    "We currently accept the following payment methods:\n\n"
+    "· PayPal\n"
+    "· Paysafecard\n"
+    "· Revolut\n"
+    "@everyone"
+)
+
+
+@bot.tree.command(name="paymentmethods", description="Στέλνει το embed με τους τρόπους πληρωμής")
+@app_commands.describe(channel="Το κανάλι όπου θα σταλεί (προεπιλογή: το τρέχον κανάλι)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def paymentmethods(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    target_channel = channel or interaction.channel
+    embed = discord.Embed(description=PAYMENT_METHODS_TEXT, color=discord.Color.gold())
+    try:
+        await target_channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+        await interaction.response.send_message(f"✅ Στάλθηκε στο {target_channel.mention}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+
+
+@paymentmethods.error
+async def paymentmethods_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Server' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
 # ============================================================
 #  FUN
 # ============================================================
