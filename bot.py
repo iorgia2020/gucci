@@ -23,6 +23,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = os.getenv("PREFIX", "!")
 DB_PATH = os.path.join(os.path.dirname(__file__), "economy.db")
 
+# Ρόλος που παίρνει αυτόματα κάθε νέο μέλος μόλις μπει στο server.
+# Default: 1529665383655800964 — μπορείς να το αλλάξεις βάζοντας
+# AUTO_MEMBER_ROLE_ID στο .env / Railway variables.
+try:
+    AUTO_MEMBER_ROLE_ID = int(os.getenv("AUTO_MEMBER_ROLE_ID", "1529665383655800964")) or None
+except ValueError:
+    AUTO_MEMBER_ROLE_ID = None
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -308,6 +316,7 @@ GUCCI_EMOJI = "<:gucci:1545536664565190686>"
 
 PLANS_TEXT = (
     f"{GUCCI_EMOJI} **Gucci Solutions Plans**\n\n"
+    "**LAPTOP&PC**\n"
     "**Lifetime License — €40**\n"
     "· One-time payment\n"
     "· Lifetime access\n\n\n"
@@ -781,6 +790,18 @@ async def on_invite_delete(invite: discord.Invite):
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
+
+    # Αυτόματος ρόλος σε κάθε νέο μέλος
+    if AUTO_MEMBER_ROLE_ID:
+        role = guild.get_role(AUTO_MEMBER_ROLE_ID)
+        if role:
+            try:
+                await member.add_roles(role, reason="Αυτόματος ρόλος νέου μέλους")
+            except discord.Forbidden:
+                print(f"⚠️ Δεν έχω δικαίωμα να δώσω τον αυτόματο ρόλο στο {guild.name}.")
+        else:
+            print(f"⚠️ Δεν βρέθηκε ρόλος με ID {AUTO_MEMBER_ROLE_ID} στο {guild.name}.")
+
     before = invite_cache.get(guild.id, {})
     try:
         after_invites = await guild.invites()
@@ -1183,7 +1204,7 @@ class TicketPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Άνοιγμα Ticket", style=discord.ButtonStyle.blurple, emoji="🎫", custom_id="ticket_open")
+    @discord.ui.button(label="OPEN TICKET", style=discord.ButtonStyle.secondary, emoji="🟡", custom_id="ticket_open")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         member = interaction.user
@@ -1247,7 +1268,7 @@ class TicketPanelView(discord.ui.View):
                 "και η ομάδα υποστήριξης θα σε βοηθήσει σύντομα.\n\n"
                 "Πάτησε το κουμπί παρακάτω όταν θέλεις να κλείσεις το ticket."
             ),
-            color=discord.Color.blurple(),
+            color=discord.Color.gold(),
         )
         await channel.send(
             content=f"{member.mention} {staff_mention}".strip(),
@@ -1265,7 +1286,7 @@ async def setupticket(interaction: discord.Interaction, channel: discord.TextCha
     embed = discord.Embed(
         title="🎫 Support Tickets",
         description="Πάτησε το κουμπί παρακάτω για να ανοίξεις ένα ιδιωτικό ticket με την ομάδα υποστήριξης.",
-        color=discord.Color.blurple(),
+        color=discord.Color.gold(),
     )
     try:
         await target_channel.send(embed=embed, view=TicketPanelView())
