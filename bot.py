@@ -26,6 +26,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.voice_states = True
+intents.invites = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=commands.DefaultHelpCommand())
 
@@ -44,9 +45,15 @@ def get_conn():
             level INTEGER DEFAULT 1,
             last_daily REAL DEFAULT 0,
             last_work REAL DEFAULT 0,
-            last_xp_gain REAL DEFAULT 0
+            last_xp_gain REAL DEFAULT 0,
+            invites INTEGER DEFAULT 0
         )
     """)
+    # Προσθήκη της στήλης invites αν λείπει από παλιότερη βάση
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "invites" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN invites INTEGER DEFAULT 0")
+        conn.commit()
     return conn
 
 
@@ -56,7 +63,7 @@ def get_user(conn, user_id):
     if row is None:
         conn.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
         conn.commit()
-        return (user_id, 0, 0, 1, 0, 0, 0)
+        return (user_id, 0, 0, 1, 0, 0, 0, 0)
     return row
 
 
@@ -309,7 +316,7 @@ async def on_message(message: discord.Message):
 
     conn = get_conn()
     row = get_user(conn, message.author.id)
-    _, balance, xp, level, last_daily, last_work, last_xp_gain = row
+    _, balance, xp, level, last_daily, last_work, last_xp_gain, _invites = row
     now = time.time()
     if now - last_xp_gain >= 60:
         gained = random.randint(5, 15)
@@ -615,12 +622,98 @@ async def queue_cmd(interaction: discord.Interaction):
 
 
 # ============================================================
+#  INVITE TRACKING
+# ============================================================
+
+# guild_id -> {invite_code: uses}
+invite_cache: dict[int, dict[str, int]] = {}
+
+
+async def cache_guild_invites(guild: discord.Guild):
+    try:
+        invites = await guild.invites()
+        invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+    except discord.Forbidden:
+        print(f"⚠️ Δεν έχω δικαίωμα 'Manage Server' στο {guild.name} για invite tracking.")
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    invite_cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses or 0
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    guild = member.guild
+    before = invite_cache.get(guild.id, {})
+    try:
+        after_invites = await guild.invites()
+    except discord.Forbidden:
+        return
+
+    after = {inv.code: inv.uses for inv in after_invites}
+    used_invite = None
+    for inv in after_invites:
+        if after.get(inv.code, 0) > before.get(inv.code, 0):
+            used_invite = inv
+            break
+
+    invite_cache[guild.id] = after
+
+    if used_invite and used_invite.inviter:
+        conn = get_conn()
+        get_user(conn, used_invite.inviter.id)
+        conn.execute(
+            "UPDATE users SET invites = invites + 1 WHERE user_id=?",
+            (used_invite.inviter.id,),
+        )
+        conn.commit()
+        conn.close()
+
+
+@bot.tree.command(name="invites", description="Δείχνει πόσα άτομα έχει καλέσει ένας χρήστης")
+async def invites_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    conn = get_conn()
+    row = get_user(conn, member.id)
+    conn.close()
+    embed = discord.Embed(title=f"📨 Invites του {member.display_name}", color=discord.Color.teal())
+    embed.add_field(name="Σύνολο invites", value=str(row[7]))
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="leaderboard-invites", description="Δείχνει ποιοι έχουν καλέσει τους περισσότερους στον server")
+async def leaderboard_invites(interaction: discord.Interaction):
+    conn = get_conn()
+    cur = conn.execute("SELECT user_id, invites FROM users WHERE invites > 0 ORDER BY invites DESC LIMIT 10")
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        await interaction.response.send_message("Δεν υπάρχουν καταγεγραμμένα invites ακόμα.")
+        return
+    lines = []
+    for i, (user_id, invite_count) in enumerate(rows, 1):
+        user = interaction.guild.get_member(user_id)
+        name = user.display_name if user else f"Χρήστης {user_id}"
+        lines.append(f"**{i}.** {name} — {invite_count} invites")
+    embed = discord.Embed(title="🏆 Leaderboard Invites", description="\n".join(lines), color=discord.Color.teal())
+    await interaction.response.send_message(embed=embed)
+
+
+# ============================================================
 #  READY / STARTUP
 # ============================================================
 
 @bot.event
 async def on_ready():
     print(f"✅ Συνδέθηκε ως {bot.user} (ID: {bot.user.id})")
+    for guild in bot.guilds:
+        await cache_guild_invites(guild)
     try:
         synced = await bot.tree.sync()
         print(f"🔄 Sync {len(synced)} slash commands")
