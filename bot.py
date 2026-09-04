@@ -31,6 +31,29 @@ intents.invites = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=commands.DefaultHelpCommand())
 
 
+# Γενικός error handler για ΟΛΕΣ τις slash commands (καλύπτει και όσες
+# δεν έχουν δικό τους @command.error, π.χ. kick/ban/mute/warn/clear/slowmode)
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        msg = "❌ Δεν έχεις τα απαραίτητα δικαιώματα για αυτή την εντολή."
+    elif isinstance(error, app_commands.errors.BotMissingPermissions):
+        msg = "❌ Δεν έχω τα απαραίτητα δικαιώματα για να εκτελέσω αυτή την εντολή."
+    elif isinstance(error, app_commands.errors.CommandOnCooldown):
+        msg = f"⏳ Δοκίμασε ξανά σε {error.retry_after:.1f}s."
+    else:
+        msg = f"⚠️ Κάτι πήγε στραβά: {error}"
+        print(f"Unhandled app command error: {error!r}")
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
 # ============================================================
 #  ECONOMY / LEVELS — DB HELPERS
 # ============================================================
@@ -116,6 +139,11 @@ async def unban(interaction: discord.Interaction, user_id: str):
 @bot.tree.command(name="mute", description="Κάνει timeout έναν χρήστη (σε λεπτά)")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Δεν δόθηκε λόγος"):
+    if minutes <= 0 or minutes > 40320:  # Discord's max timeout είναι 28 μέρες
+        await interaction.response.send_message(
+            "❌ Η διάρκεια πρέπει να είναι μεταξύ 1 και 40320 λεπτών (28 ημέρες).", ephemeral=True
+        )
+        return
     duration = datetime.timedelta(minutes=minutes)
     await member.timeout(duration, reason=reason)
     embed = discord.Embed(
@@ -167,6 +195,11 @@ async def clear(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="slowmode", description="Ορίζει slowmode στο κανάλι (σε δευτερόλεπτα)")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def slowmode(interaction: discord.Interaction, seconds: int):
+    if seconds < 0 or seconds > 21600:
+        await interaction.response.send_message(
+            "❌ Το slowmode πρέπει να είναι μεταξύ 0 και 21600 δευτερολέπτων (6 ώρες).", ephemeral=True
+        )
+        return
     await interaction.channel.edit(slowmode_delay=seconds)
     await interaction.response.send_message(f"🐌 Slowmode ορίστηκε στα {seconds} δευτερόλεπτα.")
 
@@ -426,6 +459,12 @@ async def give(interaction: discord.Interaction, member: discord.Member, amount:
     if amount <= 0:
         await interaction.response.send_message("❌ Το ποσό πρέπει να είναι θετικό.", ephemeral=True)
         return
+    if member.id == interaction.user.id:
+        await interaction.response.send_message("❌ Δεν μπορείς να στείλεις coins στον εαυτό σου.", ephemeral=True)
+        return
+    if member.bot:
+        await interaction.response.send_message("❌ Δεν μπορείς να στείλεις coins σε bot.", ephemeral=True)
+        return
     conn = get_conn()
     sender = get_user(conn, interaction.user.id)
     if sender[1] < amount:
@@ -453,8 +492,11 @@ async def level_cmd(interaction: discord.Interaction, member: discord.Member = N
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="leaderboard", description="Δείχνει το leaderboard του server (coins)")
-async def leaderboard(interaction: discord.Interaction):
+leaderboard_group = app_commands.Group(name="leaderboard", description="Leaderboards του server")
+
+
+@leaderboard_group.command(name="coins", description="Δείχνει το leaderboard του server (coins)")
+async def leaderboard_coins(interaction: discord.Interaction):
     conn = get_conn()
     cur = conn.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
     rows = cur.fetchall()
@@ -467,7 +509,7 @@ async def leaderboard(interaction: discord.Interaction):
         user = interaction.guild.get_member(user_id)
         name = user.display_name if user else f"Χρήστης {user_id}"
         lines.append(f"**{i}.** {name} — {balance_} coins")
-    embed = discord.Embed(title="🏆 Leaderboard", description="\n".join(lines), color=discord.Color.gold())
+    embed = discord.Embed(title="🏆 Leaderboard (Coins)", description="\n".join(lines), color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
 
 
@@ -661,6 +703,13 @@ async def cache_guild_invites(guild: discord.Guild):
 
 
 @bot.event
+async def on_guild_join(guild: discord.Guild):
+    # Χωρίς αυτό, αν το bot μπει σε νέο server ενώ ήδη τρέχει, δεν έχει
+    # baseline invite counts και ο πρώτος χρήστης που μπαίνει αποδίδεται λάθος.
+    await cache_guild_invites(guild)
+
+
+@bot.event
 async def on_invite_create(invite: discord.Invite):
     invite_cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses or 0
 
@@ -710,7 +759,7 @@ async def invites_cmd(interaction: discord.Interaction, member: discord.Member =
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="leaderboard-invites", description="Δείχνει ποιοι έχουν καλέσει τους περισσότερους στον server")
+@leaderboard_group.command(name="invites", description="Δείχνει ποιοι έχουν καλέσει τους περισσότερους στον server")
 async def leaderboard_invites(interaction: discord.Interaction):
     conn = get_conn()
     cur = conn.execute("SELECT user_id, invites FROM users WHERE invites > 0 ORDER BY invites DESC LIMIT 10")
@@ -726,6 +775,9 @@ async def leaderboard_invites(interaction: discord.Interaction):
         lines.append(f"**{i}.** {name} — {invite_count} invites")
     embed = discord.Embed(title="🏆 Leaderboard Invites", description="\n".join(lines), color=discord.Color.teal())
     await interaction.response.send_message(embed=embed)
+
+
+bot.tree.add_command(leaderboard_group)
 
 
 # ============================================================
