@@ -836,6 +836,17 @@ async def on_member_join(member: discord.Member):
         else:
             print(f"⚠️ Δεν βρέθηκε ρόλος με ID {AUTO_MEMBER_ROLE_ID} στο {guild.name}.")
 
+    # DM καλωσορίσματος στο νέο μέλος
+    welcome_embed = discord.Embed(
+        title="👋 Welcome to Gucci!",
+        description=f"Hey {member.mention}, welcome to **{guild.name}**! We're glad to have you here.",
+        color=discord.Color.gold(),
+    )
+    try:
+        await member.send(embed=welcome_embed)
+    except discord.Forbidden:
+        print(f"⚠️ Δεν μπόρεσα να στείλω DM στον/στην {member} (έχει κλειστά τα DMs).")
+
     before = invite_cache.get(guild.id, {})
     try:
         after_invites = await guild.invites()
