@@ -30,6 +30,8 @@ intents.invites = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=commands.DefaultHelpCommand())
 
+START_TIME = time.time()
+
 
 # Γενικός error handler για ΟΛΕΣ τις slash commands (καλύπτει και όσες
 # δεν έχουν δικό τους @command.error, π.χ. kick/ban/mute/warn/clear/slowmode)
@@ -219,28 +221,33 @@ COLOR_CHOICES = {
 
 @bot.tree.command(name="announce", description="Στέλνει ένα embed announcement σε κανάλι της επιλογής σου")
 @app_commands.describe(
-    title="Ο τίτλος του announcement",
-    message="Το κυρίως κείμενο. Χρησιμοποίησε '\\n' για νέα γραμμή.",
+    message="Το κυρίως κείμενο. Χρησιμοποίησε '\\n' για νέα γραμμή, ```κείμενο``` για boxed header.",
+    title="Προαιρετικό: ξεχωριστός bold τίτλος πάνω από το κείμενο",
     channel="Το κανάλι όπου θα σταλεί (προεπιλογή: το τρέχον κανάλι)",
     color="Χρώμα του πλαϊνού περιθωρίου του embed",
     image_url="Προαιρετικό: link εικόνας",
+    footer="Αν θα εμφανίζεται 'Announcement από ...' κάτω κάτω (προεπιλογή: ναι)",
 )
 @app_commands.choices(color=[app_commands.Choice(name=n, value=n) for n in COLOR_CHOICES.keys()])
 @app_commands.checks.has_permissions(manage_guild=True)
 async def announce(
     interaction: discord.Interaction,
-    title: str,
     message: str,
+    title: str = None,
     channel: discord.TextChannel = None,
     color: app_commands.Choice[str] = None,
     image_url: str = None,
+    footer: bool = True,
 ):
     target_channel = channel or interaction.channel
     chosen_color = COLOR_CHOICES.get(color.value, discord.Color.blue()) if color else discord.Color.blue()
     formatted_message = message.replace("\\n", "\n")
 
-    embed = discord.Embed(title=title, description=formatted_message, color=chosen_color)
-    embed.set_footer(text=f"Announcement από {interaction.user.display_name}")
+    embed = discord.Embed(description=formatted_message, color=chosen_color)
+    if title:
+        embed.title = title
+    if footer:
+        embed.set_footer(text=f"Announcement από {interaction.user.display_name}")
     if image_url:
         embed.set_image(url=image_url)
 
@@ -276,6 +283,44 @@ async def sendmessage(interaction: discord.Interaction, channel: discord.TextCha
 
 @sendmessage.error
 async def sendmessage_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Server' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
+# Άλλαξε αυτό στο δικό σου custom emoji ID όταν το βρεις (π.χ. "<:gucci:1234567890>")
+GUCCI_EMOJI = "<:gucci:EMOJI_ID>"
+
+PLANS_TEXT = (
+    f"{GUCCI_EMOJI} **Gucci Solutions Plans**\n\n"
+    "**Lifetime License — €40**\n"
+    "· One-time payment\n"
+    "· Lifetime access\n\n\n"
+    "**1 Month License — €20**\n"
+    "· 30 days of access\n"
+    "@everyone"
+)
+
+
+@bot.tree.command(name="plans", description="Στέλνει το embed με τα Gucci Solutions Plans")
+@app_commands.describe(channel="Το κανάλι όπου θα σταλεί (προεπιλογή: το τρέχον κανάλι)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def plans(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    target_channel = channel or interaction.channel
+    embed = discord.Embed(description=PLANS_TEXT, color=discord.Color.gold())
+    try:
+        await target_channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+        await interaction.response.send_message(f"✅ Στάλθηκε στο {target_channel.mention}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+
+
+@plans.error
+async def plans_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.errors.MissingPermissions):
         await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Server' για αυτή την εντολή.", ephemeral=True)
     else:
@@ -778,6 +823,235 @@ async def leaderboard_invites(interaction: discord.Interaction):
 
 
 bot.tree.add_command(leaderboard_group)
+
+
+# ============================================================
+#  UTILITY
+# ============================================================
+
+@bot.tree.command(name="ping", description="Δείχνει το latency του bot")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
+
+
+@bot.tree.command(name="botinfo", description="Πληροφορίες για το bot")
+async def botinfo(interaction: discord.Interaction):
+    uptime_seconds = int(time.time() - START_TIME)
+    days, rem = divmod(uptime_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}μ {hours}ω {minutes}λ {seconds}δ"
+
+    embed = discord.Embed(title="🤖 Bot Info", color=discord.Color.blurple())
+    embed.add_field(name="Uptime", value=uptime_str)
+    embed.add_field(name="Ping", value=f"{round(bot.latency * 1000)}ms")
+    embed.add_field(name="Servers", value=str(len(bot.guilds)))
+    embed.add_field(name="Χρήστες", value=str(sum(g.member_count or 0 for g in bot.guilds)))
+    embed.set_thumbnail(url=bot.user.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="userinfo", description="Δείχνει πληροφορίες για έναν χρήστη")
+async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    roles = [r.mention for r in member.roles if r.name != "@everyone"]
+    embed = discord.Embed(title=f"👤 {member.display_name}", color=member.color)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Username", value=str(member), inline=True)
+    embed.add_field(name="ID", value=str(member.id), inline=True)
+    embed.add_field(name="Bot;", value="Ναι" if member.bot else "Όχι", inline=True)
+    embed.add_field(name="Λογαριασμός από", value=discord.utils.format_dt(member.created_at, "D"), inline=True)
+    if member.joined_at:
+        embed.add_field(name="Μπήκε στο server", value=discord.utils.format_dt(member.joined_at, "D"), inline=True)
+    embed.add_field(
+        name=f"Ρόλοι ({len(roles)})",
+        value=", ".join(roles) if roles else "Κανένας",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="serverinfo", description="Δείχνει πληροφορίες για τον server")
+async def serverinfo(interaction: discord.Interaction):
+    guild = interaction.guild
+    embed = discord.Embed(title=f"🏠 {guild.name}", color=discord.Color.blurple())
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.add_field(name="Owner", value=str(guild.owner) if guild.owner else "Άγνωστο", inline=True)
+    embed.add_field(name="Μέλη", value=str(guild.member_count), inline=True)
+    embed.add_field(name="Κανάλια", value=str(len(guild.channels)), inline=True)
+    embed.add_field(name="Ρόλοι", value=str(len(guild.roles)), inline=True)
+    embed.add_field(name="Boosts", value=str(guild.premium_subscription_count or 0), inline=True)
+    embed.add_field(name="Δημιουργήθηκε", value=discord.utils.format_dt(guild.created_at, "D"), inline=True)
+    embed.add_field(name="ID", value=str(guild.id), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="poll", description="Δημιουργεί ένα ψηφοφορία με reactions")
+@app_commands.describe(
+    question="Η ερώτηση της ψηφοφορίας",
+    option1="Προαιρετική επιλογή 1 (αλλιώς 👍/👎)",
+    option2="Προαιρετική επιλογή 2",
+    option3="Προαιρετική επιλογή 3",
+    option4="Προαιρετική επιλογή 4",
+)
+async def poll(
+    interaction: discord.Interaction,
+    question: str,
+    option1: str = None,
+    option2: str = None,
+    option3: str = None,
+    option4: str = None,
+):
+    options = [o for o in (option1, option2, option3, option4) if o]
+    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+
+    embed = discord.Embed(title="📊 " + question, color=discord.Color.blurple())
+    embed.set_footer(text=f"Ψηφοφορία από {interaction.user.display_name}")
+    if options:
+        embed.description = "\n".join(f"{number_emojis[i]} {opt}" for i, opt in enumerate(options))
+    else:
+        embed.description = "👍 Ναι\n👎 Όχι"
+
+    await interaction.response.send_message(embed=embed)
+    sent_message = await interaction.original_response()
+    reactions = number_emojis[: len(options)] if options else ["👍", "👎"]
+    for emoji in reactions:
+        await sent_message.add_reaction(emoji)
+
+
+@bot.tree.command(name="remind", description="Σου στέλνει υπενθύμιση μετά από X λεπτά")
+@app_commands.describe(minutes="Σε πόσα λεπτά να σου στείλω την υπενθύμιση", text="Τι θέλεις να σου υπενθυμίσω")
+async def remind(interaction: discord.Interaction, minutes: int, text: str):
+    if minutes <= 0 or minutes > 10080:  # μέχρι 1 εβδομάδα
+        await interaction.response.send_message("❌ Οι λεπτά πρέπει να είναι μεταξύ 1 και 10080 (1 εβδομάδα).", ephemeral=True)
+        return
+    await interaction.response.send_message(f"⏰ Ok, θα σου στείλω υπενθύμιση σε **{minutes} λεπτά**.", ephemeral=True)
+
+    async def send_reminder():
+        await asyncio.sleep(minutes * 60)
+        try:
+            await interaction.user.send(f"⏰ **Υπενθύμιση:** {text}")
+        except discord.Forbidden:
+            try:
+                await interaction.channel.send(f"⏰ {interaction.user.mention} υπενθύμιση: {text}")
+            except discord.Forbidden:
+                pass
+
+    asyncio.create_task(send_reminder())
+
+
+@bot.tree.command(name="nickname", description="Αλλάζει το nickname ενός χρήστη")
+@app_commands.describe(member="Ο χρήστης", new_nickname="Το νέο nickname (άδειο για reset)")
+@app_commands.checks.has_permissions(manage_nicknames=True)
+async def nickname(interaction: discord.Interaction, member: discord.Member, new_nickname: str = None):
+    try:
+        await member.edit(nick=new_nickname)
+        if new_nickname:
+            await interaction.response.send_message(f"✅ Το nickname του {member.mention} έγινε **{new_nickname}**.")
+        else:
+            await interaction.response.send_message(f"✅ Έγινε reset το nickname του {member.mention}.")
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να αλλάξω το nickname αυτού του χρήστη.", ephemeral=True)
+
+
+@nickname.error
+async def nickname_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Nicknames' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
+role_group = app_commands.Group(name="role", description="Διαχείριση ρόλων")
+
+
+@role_group.command(name="add", description="Δίνει έναν ρόλο σε χρήστη")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if role in member.roles:
+        await interaction.response.send_message(f"ℹ️ Ο/Η {member.mention} έχει ήδη τον ρόλο {role.mention}.", ephemeral=True)
+        return
+    try:
+        await member.add_roles(role)
+        await interaction.response.send_message(f"✅ Δόθηκε ο ρόλος {role.mention} στον/στην {member.mention}.")
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να δώσω αυτόν τον ρόλο.", ephemeral=True)
+
+
+@role_group.command(name="remove", description="Αφαιρεί έναν ρόλο από χρήστη")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def role_remove(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if role not in member.roles:
+        await interaction.response.send_message(f"ℹ️ Ο/Η {member.mention} δεν έχει τον ρόλο {role.mention}.", ephemeral=True)
+        return
+    try:
+        await member.remove_roles(role)
+        await interaction.response.send_message(f"✅ Αφαιρέθηκε ο ρόλος {role.mention} από τον/την {member.mention}.")
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να αφαιρέσω αυτόν τον ρόλο.", ephemeral=True)
+
+
+bot.tree.add_command(role_group)
+
+
+@bot.tree.command(name="purge-user", description="Διαγράφει τα τελευταία μηνύματα ενός συγκεκριμένου χρήστη στο κανάλι")
+@app_commands.describe(member="Ο χρήστης του οποίου τα μηνύματα θα διαγραφούν", amount="Πόσα μηνύματα να ελέγξω (max 200)")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def purge_user(interaction: discord.Interaction, member: discord.Member, amount: int = 50):
+    amount = max(1, min(amount, 200))
+    await interaction.response.defer(ephemeral=True)
+    deleted = await interaction.channel.purge(limit=amount, check=lambda m: m.author.id == member.id)
+    await interaction.followup.send(f"🧹 Διαγράφηκαν {len(deleted)} μηνύματα του/της {member.mention}.", ephemeral=True)
+
+
+@purge_user.error
+async def purge_user_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Messages' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
+# ============================================================
+#  FUN — SOCIAL
+# ============================================================
+
+@bot.tree.command(name="ship", description="Δείχνει το ποσοστό συμβατότητας μεταξύ δύο χρηστών")
+async def ship(interaction: discord.Interaction, member1: discord.Member, member2: discord.Member = None):
+    member2 = member2 or interaction.user
+    seed = (member1.id + member2.id) % 101
+    percent = seed
+    bar_filled = "❤️" * (percent // 10)
+    bar_empty = "🖤" * (10 - percent // 10)
+    embed = discord.Embed(title="💘 Ship", color=discord.Color.magenta())
+    embed.description = f"**{member1.display_name}** + **{member2.display_name}**\n\n{bar_filled}{bar_empty}\n**{percent}%**"
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="rate", description="Βαθμολογεί κάτι από 0 έως 10 (τυχαία, για πλάκα)")
+async def rate(interaction: discord.Interaction, thing: str):
+    score = random.randint(0, 10)
+    await interaction.response.send_message(f"📊 **{thing}** — {score}/10")
+
+
+@bot.tree.command(name="choose", description="Διαλέγει τυχαία μία επιλογή από μια λίστα (χώρισέ τες με κόμμα)")
+async def choose(interaction: discord.Interaction, options: str):
+    choices = [o.strip() for o in options.split(",") if o.strip()]
+    if len(choices) < 2:
+        await interaction.response.send_message("❌ Δώσε τουλάχιστον 2 επιλογές χωρισμένες με κόμμα.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"🤔 Διάλεξα: **{random.choice(choices)}**")
+
+
+@bot.tree.command(name="hug", description="Αγκάλιασε έναν χρήστη")
+async def hug(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🤗 Ο/Η {interaction.user.mention} αγκάλιασε τον/την {member.mention}!")
+
+
+@bot.tree.command(name="slap", description="Δώσε ένα χαστούκι σε έναν χρήστη (πλάκα)")
+async def slap(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"👋 Ο/Η {interaction.user.mention} χαστούκισε τον/την {member.mention}!")
 
 
 # ============================================================
