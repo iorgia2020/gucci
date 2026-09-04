@@ -1,0 +1,5 @@
+[phases.setup]
+nixPkgs = ["ffmpeg", "python310"]
+
+[start]
+cmd = "python bot.py"
