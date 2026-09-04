@@ -226,6 +226,29 @@ async def announce_error(interaction: discord.Interaction, error):
         await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
 
 
+@bot.tree.command(name="sendmessage", description="Στέλνει απλό κείμενο (όχι embed) σε κανάλι της επιλογής σου")
+@app_commands.describe(
+    channel="Το κανάλι όπου θα σταλεί το μήνυμα",
+    message="Το κείμενο που θα στείλει το bot. Χρησιμοποίησε '\\n' για νέα γραμμή.",
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def sendmessage(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+    formatted_message = message.replace("\\n", "\n")
+    try:
+        await channel.send(formatted_message)
+        await interaction.response.send_message(f"✅ Στάλθηκε στο {channel.mention}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+
+
+@sendmessage.error
+async def sendmessage_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Χρειάζεσαι δικαίωμα 'Manage Server' για αυτή την εντολή.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
+
+
 # ============================================================
 #  FUN
 # ============================================================
