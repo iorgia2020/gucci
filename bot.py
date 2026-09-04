@@ -266,19 +266,32 @@ async def announce_error(interaction: discord.Interaction, error):
         await interaction.response.send_message(f"⚠️ Σφάλμα: {error}", ephemeral=True)
 
 
-@bot.tree.command(name="sendmessage", description="Στέλνει απλό κείμενο (όχι embed) σε κανάλι της επιλογής σου")
-@app_commands.describe(
-    channel="Το κανάλι όπου θα σταλεί το μήνυμα",
-    message="Το κείμενο που θα στείλει το bot. Χρησιμοποίησε '\\n' για νέα γραμμή.",
-)
+class SendMessageModal(discord.ui.Modal, title="Αποστολή μηνύματος"):
+    message = discord.ui.TextInput(
+        label="Μήνυμα",
+        style=discord.TextStyle.paragraph,
+        placeholder="Γράψε ό,τι θέλεις — Enter για νέα γραμμή, τελείες, κόμματα, ό,τι.",
+        max_length=2000,
+        required=True,
+    )
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await self.channel.send(str(self.message))
+            await interaction.response.send_message(f"✅ Στάλθηκε στο {self.channel.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+
+
+@bot.tree.command(name="sendmessage", description="Στέλνει κείμενο (όχι embed) σε κανάλι της επιλογής σου")
+@app_commands.describe(channel="Το κανάλι όπου θα σταλεί το μήνυμα")
 @app_commands.checks.has_permissions(manage_guild=True)
-async def sendmessage(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
-    formatted_message = message.replace("\\n", "\n")
-    try:
-        await channel.send(formatted_message)
-        await interaction.response.send_message(f"✅ Στάλθηκε στο {channel.mention}", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ Δεν έχω δικαίωμα να στείλω μήνυμα σε αυτό το κανάλι.", ephemeral=True)
+async def sendmessage(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.send_modal(SendMessageModal(channel))
 
 
 @sendmessage.error
